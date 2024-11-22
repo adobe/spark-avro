@@ -8,7 +8,7 @@ Avro for Spark
 <dependency>
     <groupId>com.adobe</groupId>
     <artifactId>spark-avro_2.12</artifactId>
-    <version>0.1.0-SNAPSHOT</version>
+    <version>0.1.0</version>
 </dependency>
 ```
 
