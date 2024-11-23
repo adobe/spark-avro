@@ -14,6 +14,34 @@ Avro for Spark
 
 ---
 
+## Including
+
+### Spark Shell
+
+`spark-shell --packages com.adobe:spark-avro_2.12:0.1.0 --repositories https://packages.confluent.io/maven/`
+
+### Maven 
+
+```xml
+<project>
+    <repositories>
+        <repository>
+            <id>confluent</id>
+            <url>https://packages.confluent.io/maven/</url>
+        </repository>
+    </repositories>
+
+    <dependencies>
+        <dependency>
+            <groupId>com.adobe</groupId>
+            <artifactId>spark-avro_2.12</artifactId>
+            <version>0.1.0</version>
+        </dependency>
+    </dependencies>
+</project>
+```
+
+---
 
 ## Usage
 
