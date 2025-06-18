@@ -12,15 +12,15 @@
 
 package com.adobe.spark.sql.avro.catalyst
 
-import com.adobe.spark.sql.avro.client.RegistryFactory
+import com.adobe.spark.sql.avro.client.RegistryClientFactory
 import com.adobe.spark.sql.avro.config.AvroDeSerConfig
 import com.adobe.spark.sql.avro.errors._
 import com.github.mrpowers.spark.fast.tests.DatasetComparer
-import io.confluent.kafka.schemaregistry.avro.AvroSchema
 import org.apache.avro.Schema
 import org.apache.avro.generic.GenericData.Record
 import org.apache.avro.generic.GenericDatumWriter
 import org.apache.avro.io.EncoderFactory
+import org.apache.spark.SparkException
 import org.apache.spark.sql.catalyst.FunctionIdentifier
 import org.apache.spark.sql.catalyst.expressions.Expression
 import org.apache.spark.sql.functions.expr
@@ -31,13 +31,14 @@ import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.must.Matchers
 
 import java.io.ByteArrayOutputStream
+import java.util.UUID
 import scala.collection.JavaConverters._
 
 class AvroBinaryToCatalystSpec extends AnyFlatSpec with Matchers with BeforeAndAfterEach with DatasetComparer {
 
   private val MAGIC_BYTE = Array[Byte](0, 0, 0, 0)
 
-  private lazy val spark = SparkSession
+  private val spark: SparkSession = SparkSession
     .builder()
     .appName("AvroBinaryToCatalystSpec")
     .master("local")
@@ -45,12 +46,17 @@ class AvroBinaryToCatalystSpec extends AnyFlatSpec with Matchers with BeforeAndA
     .config("spark.ui.enabled", "false")
     .getOrCreate()
 
+  override def beforeEach() {
+    com.adobe.spark.sql.avro.functions.registerFunctions()
+  }
+  
+
   it should "deserialize strings correctly" in {
     import spark.implicits._
     val schema = new Schema.Parser().parse("""{"type": "string"}""");
     val registryConfig = Map("schema.registry.url" -> "mock://registry", "max.schemas.per.subject" -> "200")
-    val schemaManager = RegistryFactory.create(registryConfig)
-    val schemaId = schemaManager.register("deserialize-string-correctly", new AvroSchema(schema))
+    val schemaManager = RegistryClientFactory.create(registryConfig)
+    val schemaId = schemaManager.register("deserialize-string-correctly", schema)
     val config = AvroDeSerConfig(schemaId, schema, errOnEvolution = false, FailFastExceptionHandler())
     val data = Seq(Row(MAGIC_BYTE ++ BigInt(schemaId).toByteArray ++ asBytes(schema, "key")))
     val result = spark.createDataFrame(data.asJava, StructType(Seq(StructField("key", BinaryType))))
@@ -58,7 +64,21 @@ class AvroBinaryToCatalystSpec extends AnyFlatSpec with Matchers with BeforeAndA
     assertSmallDatasetEquality(result, Seq("key").toDF("key"))
   }
 
+  it should "deserialize strings correctly with id" in {
+    import spark.implicits._
+    val schema = new Schema.Parser().parse("""{"type": "string"}""");
+    val registryConfig = Map("schema.registry.url" -> "mock://registry", "max.schemas.per.subject" -> "200")
+    val schemaManager = RegistryClientFactory.create(registryConfig)
+    val schemaId = schemaManager.register("deserialize-string-correctly-with-id", schema)
+    val config = AvroDeSerConfig(schemaId, schema, errOnEvolution = false, FailFastExceptionHandler())
+    val data = Seq(Row(asBytes(schema, "key")))
+    val result = spark.createDataFrame(data.asJava, StructType(Seq(StructField("key", BinaryType))))
+      .select(new Column(AvroBinaryWithIdToCatalyst(functions.col("key").expr, functions.lit(schemaId.asInstanceOf[Int]).expr, config, registryConfig)).as("key"))
+    assertSmallDatasetEquality(result, Seq("key").toDF("key"))
+  }
+
   it should "deserialize struct correctly" in {
+    import spark.implicits._
     val schema = new Schema.Parser().parse(
       """{
         |  "name": "value",
@@ -70,8 +90,8 @@ class AvroBinaryToCatalystSpec extends AnyFlatSpec with Matchers with BeforeAndA
         |}""".stripMargin
     );
     val registryConfig = Map("schema.registry.url" -> "mock://registry", "max.schemas.per.subject" -> "200")
-    val schemaManager = RegistryFactory.create(registryConfig)
-    val schemaId = schemaManager.register("deserialize-struct-correctly", new AvroSchema(schema))
+    val schemaManager = RegistryClientFactory.create(registryConfig)
+    val schemaId = schemaManager.register("deserialize-struct-correctly", schema)
     val config = AvroDeSerConfig(schemaId, schema, errOnEvolution = false, FailFastExceptionHandler())
     val data = Seq(Row(MAGIC_BYTE ++ BigInt(schemaId).toByteArray ++ asBytes(schema, Map("key" -> "k1", "value" -> 1))))
     val result = spark.createDataFrame(data.asJava, StructType(Seq(StructField("record", BinaryType))))
@@ -82,8 +102,35 @@ class AvroBinaryToCatalystSpec extends AnyFlatSpec with Matchers with BeforeAndA
     )
     assertSmallDatasetEquality(result, expected)
   }
+  
+  it should "deserialize struct correctly with id" in {
+    import spark.implicits._
+    val schema = new Schema.Parser().parse(
+      """{
+        |  "name": "value",
+        |  "type": "record",
+        |  "fields": [
+        |    {"name": "key", "type": "string"},
+        |    {"name": "value", "type": "int"}
+        |  ]
+        |}""".stripMargin
+    );
+    val registryConfig = Map("schema.registry.url" -> "mock://registry", "max.schemas.per.subject" -> "200")
+    val schemaManager = RegistryClientFactory.create(registryConfig)
+    val schemaId = schemaManager.register("deserialize-struct-correctly-with-id", schema)
+    val config = AvroDeSerConfig(schemaId, schema, errOnEvolution = false, FailFastExceptionHandler())
+    val data = Seq(Row(asBytes(schema, Map("key" -> "k1", "value" -> 1))))
+    val result = spark.createDataFrame(data.asJava, StructType(Seq(StructField("record", BinaryType))))
+      .select(new Column(AvroBinaryWithIdToCatalyst(functions.col("record").expr, functions.lit(schemaId.asInstanceOf[Int]).expr, config, registryConfig)).as("record"))
+    val expected = spark.createDataFrame(
+      Seq(Row(Row("k1", 1))).asJava,
+      StructType.fromDDL("record struct<key STRING NOT NULL, value INTEGER NOT NULL>")
+    )
+    assertSmallDatasetEquality(result, expected)
+  }
 
   it should "deserialize struct permissively" in {
+    import spark.implicits._
     val schema = new Schema.Parser().parse(
       """{
         |  "name": "value",
@@ -95,8 +142,8 @@ class AvroBinaryToCatalystSpec extends AnyFlatSpec with Matchers with BeforeAndA
         |}""".stripMargin
     );
     val registryConfig = Map("schema.registry.url" -> "mock://registry", "max.schemas.per.subject" -> "200")
-    val schemaManager = RegistryFactory.create(registryConfig)
-    val schemaId = schemaManager.register("deserialize-struct-permissively", new AvroSchema(schema))
+    val schemaManager = RegistryClientFactory.create(registryConfig)
+    val schemaId = schemaManager.register("deserialize-struct-permissively", schema)
     val config = AvroDeSerConfig(schemaId, schema, errOnEvolution = false, PermissiveRecordExceptionHandler())
     val data = Seq(Row(MAGIC_BYTE ++ BigInt(schemaId).toByteArray))
     val result = spark.createDataFrame(data.asJava, StructType(Seq(StructField("record", BinaryType))))
@@ -108,7 +155,34 @@ class AvroBinaryToCatalystSpec extends AnyFlatSpec with Matchers with BeforeAndA
     assertSmallDatasetEquality(result, expected)
   }
 
+  it should "deserialize struct permissively with id" in {
+    import spark.implicits._
+    val schema = new Schema.Parser().parse(
+      """{
+        |  "name": "value",
+        |  "type": "record",
+        |  "fields": [
+        |    {"name": "key", "type": ["string", "null"]},
+        |    {"name": "value", "type": ["int", "null"]}
+        |  ]
+        |}""".stripMargin
+    );
+    val registryConfig = Map("schema.registry.url" -> "mock://registry", "max.schemas.per.subject" -> "200")
+    val schemaManager = RegistryClientFactory.create(registryConfig)
+    val schemaId = schemaManager.register("deserialize-struct-permissively-with-id", schema)
+    val config = AvroDeSerConfig(schemaId, schema, errOnEvolution = false, PermissiveRecordExceptionHandler())
+    val data = Seq(Row(Array[Byte]()))
+    val result = spark.createDataFrame(data.asJava, StructType(Seq(StructField("record", BinaryType))))
+      .select(new Column(AvroBinaryWithIdToCatalyst(functions.col("record").expr, functions.lit(schemaId.asInstanceOf[Int]).expr, config, registryConfig)).as("record"))
+    val expected = spark.createDataFrame(
+      Seq(Row(Row(null, null))).asJava,
+      StructType.fromDDL("record struct<key STRING, value INTEGER>")
+    )
+    assertSmallDatasetEquality(result, expected)
+  }
+
   it should "deserialize struct null if failed" in {
+    import spark.implicits._
     val schema = new Schema.Parser().parse(
       """{
         |  "name": "value",
@@ -120,8 +194,8 @@ class AvroBinaryToCatalystSpec extends AnyFlatSpec with Matchers with BeforeAndA
         |}""".stripMargin
     );
     val registryConfig = Map("schema.registry.url" -> "mock://registry", "max.schemas.per.subject" -> "200")
-    val schemaManager = RegistryFactory.create(registryConfig)
-    val schemaId = schemaManager.register("deserialize-struct-null", new AvroSchema(schema))
+    val schemaManager = RegistryClientFactory.create(registryConfig)
+    val schemaId = schemaManager.register("deserialize-struct-null", schema)
     val config = AvroDeSerConfig(schemaId, schema, errOnEvolution = false, NullReturningRecordExceptionHandler())
     val data = Seq(Row(MAGIC_BYTE ++ BigInt(schemaId).toByteArray))
     val result = spark.createDataFrame(data.asJava, StructType(Seq(StructField("record", BinaryType))))
@@ -133,7 +207,8 @@ class AvroBinaryToCatalystSpec extends AnyFlatSpec with Matchers with BeforeAndA
     assertSmallDatasetEquality(result, expected)
   }
 
-  it should "deserialize with default" in {
+  it should "deserialize struct null if failed with id" in {
+    import spark.implicits._
     val schema = new Schema.Parser().parse(
       """{
         |  "name": "value",
@@ -145,8 +220,34 @@ class AvroBinaryToCatalystSpec extends AnyFlatSpec with Matchers with BeforeAndA
         |}""".stripMargin
     );
     val registryConfig = Map("schema.registry.url" -> "mock://registry", "max.schemas.per.subject" -> "200")
-    val schemaManager = RegistryFactory.create(registryConfig)
-    val schemaId = schemaManager.register("deserialize-struct-default", new AvroSchema(schema))
+    val schemaManager = RegistryClientFactory.create(registryConfig)
+    val schemaId = schemaManager.register("deserialize-struct-null-with-id", schema)
+    val config = AvroDeSerConfig(schemaId, schema, errOnEvolution = false, NullReturningRecordExceptionHandler())
+    val data = Seq(Row(Array[Byte]()))
+    val result = spark.createDataFrame(data.asJava, StructType(Seq(StructField("record", BinaryType))))
+      .select(new Column(AvroBinaryWithIdToCatalyst(functions.col("record").expr, functions.lit(schemaId.asInstanceOf[Int]).expr, config, registryConfig)).as("record"))
+    val expected = spark.createDataFrame(
+      Seq(Row(null)).asJava,
+      StructType.fromDDL("record struct<key STRING NOT NULL, value INTEGER NOT NULL>")
+    )
+    assertSmallDatasetEquality(result, expected)
+  }
+
+  it should "deserialize with default" in {
+    import spark.implicits._
+    val schema = new Schema.Parser().parse(
+      """{
+        |  "name": "value",
+        |  "type": "record",
+        |  "fields": [
+        |    {"name": "key", "type": "string"},
+        |    {"name": "value", "type": "int"}
+        |  ]
+        |}""".stripMargin
+    );
+    val registryConfig = Map("schema.registry.url" -> "mock://registry", "max.schemas.per.subject" -> "200")
+    val schemaManager = RegistryClientFactory.create(registryConfig)
+    val schemaId = schemaManager.register("deserialize-struct-default", schema)
     val default = new Record(schema);
     default.put("key", "defaultKey");
     default.put("value", -1);
@@ -164,13 +265,46 @@ class AvroBinaryToCatalystSpec extends AnyFlatSpec with Matchers with BeforeAndA
     assertSmallDatasetEquality(result, expected)
   }
 
+  it should "deserialize with default with id" in {
+    import spark.implicits._
+    val schema = new Schema.Parser().parse(
+      """{
+        |  "name": "value",
+        |  "type": "record",
+        |  "fields": [
+        |    {"name": "key", "type": "string"},
+        |    {"name": "value", "type": "int"}
+        |  ]
+        |}""".stripMargin
+    );
+    val registryConfig = Map("schema.registry.url" -> "mock://registry", "max.schemas.per.subject" -> "200")
+    val schemaManager = RegistryClientFactory.create(registryConfig)
+    val schemaId = schemaManager.register("deserialize-struct-default-with-id", schema)
+    val default = new Record(schema);
+    default.put("key", "defaultKey");
+    default.put("value", -1);
+    val config = AvroDeSerConfig(schemaId, schema, errOnEvolution = false, DeserializingDefaultRecordExceptionHandler(default))
+    val data = Seq(Row(Array[Byte]()))
+    val result = spark.createDataFrame(data.asJava, StructType(Seq(StructField("record", BinaryType))))
+      .select(new Column(AvroBinaryWithIdToCatalyst(functions.col("record").expr, functions.lit(schemaId.asInstanceOf[Int]).expr, config, registryConfig)).as("record"))
+    val expected = spark.createDataFrame(
+      Seq(Row(Row("defaultKey", -1))).asJava,
+      StructType.fromDDL("record struct<key STRING NOT NULL, value INTEGER NOT NULL>")
+    )
+    expected.show(false)
+    println("||||||||")
+    result.show(false)
+    assertSmallDatasetEquality(result, expected)
+  }
+
   it should "detect schema evolution" in {
+    import spark.implicits._
     val schema = new Schema.Parser().parse("""{"type": "int"}""")
     val schemaV2 = new Schema.Parser().parse("""{"type": "string"}""")
     val registryConfig = Map("schema.registry.url" -> "mock://registry2", "max.schemas.per.subject" -> "200")
-    val schemaManager = RegistryFactory.create(registryConfig)
-    val schemaId = schemaManager.register("deserialize-string-correctly", new AvroSchema(schema))
-    val schemaV2Id = schemaManager.register("deserialize-string-correctly", new AvroSchema(schemaV2))
+    val schemaManager = RegistryClientFactory.create(registryConfig)
+    val schemaId = schemaManager.register("deserialize-string-correctly", schema)
+    val schemaV2Id = schemaManager.register("deserialize-string-correctly", schemaV2)
     val config = AvroDeSerConfig(schemaId, schemaV2, errOnEvolution = true, NullReturningRecordExceptionHandler())
     val data = Seq(Row(MAGIC_BYTE ++ BigInt(schemaV2Id).toByteArray ++ asBytes(schemaV2, "key"))).asJava
     val result = spark.createDataFrame(data, StructType(Seq(StructField("key", BinaryType))))
@@ -178,42 +312,208 @@ class AvroBinaryToCatalystSpec extends AnyFlatSpec with Matchers with BeforeAndA
     the[Exception] thrownBy result.show() mustBe a[SchemaEvolutionError]
   }
 
+  it should "detect schema evolution with id" in {
+    import spark.implicits._
+    val schema = new Schema.Parser().parse("""{"type": "int"}""")
+    val schemaV2 = new Schema.Parser().parse("""{"type": "string"}""")
+    val registryConfig = Map("schema.registry.url" -> "mock://registry2", "max.schemas.per.subject" -> "200")
+    val schemaManager = RegistryClientFactory.create(registryConfig)
+    val schemaId = schemaManager.register("deserialize-string-correctly-with-id", schema)
+    val schemaV2Id = schemaManager.register("deserialize-string-correctly-with-id", schemaV2)
+    val config = AvroDeSerConfig(schemaId, schemaV2, errOnEvolution = true, NullReturningRecordExceptionHandler())
+    val data = Seq(Row(asBytes(schemaV2, "key"))).asJava
+    val result = spark.createDataFrame(data, StructType(Seq(StructField("key", BinaryType))))
+      .select(new Column(AvroBinaryWithIdToCatalyst(functions.col("key").expr, functions.lit(schemaV2Id.asInstanceOf[Int]).expr, config, registryConfig)).as("key"))
+    the[Exception] thrownBy result.show() mustBe a[SchemaEvolutionError]
+  }
+
   it should "work as sql expression" in {
     import spark.implicits._
-    spark.sessionState.functionRegistry
-      .registerFunction(FunctionIdentifier("from_avro_using_registry"),
-        (children: Seq[Expression]) => new AvroBinaryToCatalyst(children.head, children(1), children(2), children.last),
-        "built-in"
-      )
-
     val strSchema = new Schema.Parser().parse("""{"type": "string"}""");
     val intSchema = new Schema.Parser().parse("""{"type": "int"}""");
     val registryConfig = Map("schema.registry.url" -> "mock://registry", "max.schemas.per.subject" -> "200")
-    val schemaManager = RegistryFactory.create(registryConfig)
-    val schemaId = schemaManager.register("deserialize-string-correctly", new AvroSchema(strSchema))
+    val schemaManager = RegistryClientFactory.create(registryConfig)
+    val schemaId = schemaManager.register("deserialize-string-correctly", strSchema)
     val data = Seq(Row(MAGIC_BYTE ++ BigInt(schemaId).toByteArray ++ asBytes(intSchema, 1)))
-    
+
     val result = spark.createDataFrame(data.asJava, StructType(Seq(StructField("key", BinaryType))))
       .select(expr(
         s"""
-        |from_avro_using_registry(
-        | key, 
-        | map(
-        |   'schemaId', '1', 
-        |   'schema', '{"type": "string"}', 
-        |   'errOnEvolution', 'false', 
-        |   'errHandler', 'com.adobe.spark.sql.avro.errors.DefaultRecordExceptionHandler', 
-        |   'magicByteSize', '4'
-        | ), 
-        | 'HELLO', 
-        | map('schema.registry.url', 'mock://registry', 'max.schemas.per.subject', '200')
-        |)
-        |""".stripMargin).as("value"))
+           |from_avro_binary(
+           | key, 
+           | map(
+           |   'subject', 'deserialize-string-correctly', 
+           |   'errOnEvolution', 'false', 
+           |   'errHandler', 'com.adobe.spark.sql.avro.errors.DefaultRecordExceptionHandler', 
+           |   'magicByteSize', '4'
+           | ), 
+           | 'HELLO', 
+           | map('schema.registry.url', 'mock://registry', 'max.schemas.per.subject', '200')
+           |)
+           |""".stripMargin).as("value"))
 
     val expected = Seq("HELLO").toDF("value")
     result.show(false)
     expected.show(false)
     assertSmallDatasetEquality(result, expected)
+  }
+
+  it should "work as sql query" in {
+    import spark.implicits._
+    val strSchema = new Schema.Parser().parse("""{"type": "string"}""");
+    val intSchema = new Schema.Parser().parse("""{"type": "int"}""");
+    val registryConfig = Map("schema.registry.url" -> "mock://registry", "max.schemas.per.subject" -> "200")
+    val schemaManager = RegistryClientFactory.create(registryConfig)
+    val schemaId = schemaManager.register("deserialize-string-correctly", strSchema)
+    val data = Seq(Row(MAGIC_BYTE ++ BigInt(schemaId).toByteArray ++ asBytes(intSchema, 1)))
+    val randomViewId = UUID.randomUUID.toString.replace("-", "")
+    spark.createDataFrame(data.asJava, StructType(Seq(StructField("key", BinaryType)))).createTempView(randomViewId)
+    val result = spark.sql(
+        s"""
+           |SELECT 
+           |  from_avro_binary(
+           |   key, 
+           |   map(
+           |     'subject', 'deserialize-string-correctly', 
+           |     'errOnEvolution', 'false', 
+           |     'errHandler', 'com.adobe.spark.sql.avro.errors.DefaultRecordExceptionHandler', 
+           |     'magicByteSize', '4'
+           |   ), 
+           |   'HELLO', 
+           |   map('schema.registry.url', 'mock://registry', 'max.schemas.per.subject', '200')
+           |  ) AS value
+           |FROM `${randomViewId}`
+           |""".stripMargin
+        )
+
+    val expected = Seq("HELLO").toDF("value")
+    result.show(false)
+    expected.show(false)
+    assertSmallDatasetEquality(result, expected)
+  }
+
+
+  it should "work as sql expression with id" in {
+    import spark.implicits._
+    val strSchema = new Schema.Parser().parse("""{"type": "string"}""");
+    val intSchema = new Schema.Parser().parse("""{"type": "int"}""");
+    val registryConfig = Map("schema.registry.url" -> "mock://registry", "max.schemas.per.subject" -> "200")
+    val schemaManager = RegistryClientFactory.create(registryConfig)
+    val schemaId = schemaManager.register("deserialize-string-correctly", strSchema)
+    val data = Seq(Row(asBytes(intSchema, 1)))
+
+    val result = spark.createDataFrame(data.asJava, StructType(Seq(StructField("key", BinaryType))))
+      .select(expr(
+        s"""
+           |from_avro_binary_with_id(
+           | key, 
+           | ${schemaId}, 
+           | map(
+           |   'subject', 'deserialize-string-correctly', 
+           |   'errOnEvolution', 'false', 
+           |   'errHandler', 'com.adobe.spark.sql.avro.errors.DefaultRecordExceptionHandler', 
+           |   'magicByteSize', '4'
+           | ), 
+           | 'HELLO', 
+           | map('schema.registry.url', 'mock://registry', 'max.schemas.per.subject', '200')
+           |)
+           |""".stripMargin).as("value"))
+
+    val expected = Seq("HELLO").toDF("value")
+    result.show(false)
+    expected.show(false)
+    assertSmallDatasetEquality(result, expected)
+  }
+
+  it should "work as sql query with id" in {
+    import spark.implicits._
+    val strSchema = new Schema.Parser().parse("""{"type": "string"}""");
+    val intSchema = new Schema.Parser().parse("""{"type": "int"}""");
+    val registryConfig = Map("schema.registry.url" -> "mock://registry", "max.schemas.per.subject" -> "200")
+    val schemaManager = RegistryClientFactory.create(registryConfig)
+    val schemaId = schemaManager.register("deserialize-string-correctly", strSchema)
+    val data = Seq(Row(asBytes(intSchema, 1)))
+    val randomViewId = UUID.randomUUID.toString.replace("-", "")
+    spark.createDataFrame(data.asJava, StructType(Seq(StructField("key", BinaryType)))).createTempView(randomViewId)
+    val result = spark.sql(
+        s"""
+           |SELECT 
+           |  from_avro_binary_with_id(
+           |   key, 
+           |   ${schemaId}, 
+           |   map(
+           |     'subject', 'deserialize-string-correctly', 
+           |     'errOnEvolution', 'false', 
+           |     'errHandler', 'com.adobe.spark.sql.avro.errors.DefaultRecordExceptionHandler', 
+           |     'magicByteSize', '4'
+           |   ), 
+           |   'HELLO', 
+           |   map('schema.registry.url', 'mock://registry', 'max.schemas.per.subject', '200')
+           |  ) AS value
+           |FROM `${randomViewId}`
+           |""".stripMargin
+        )
+
+    val expected = Seq("HELLO").toDF("value")
+    result.show(false)
+    expected.show(false)
+    assertSmallDatasetEquality(result, expected)
+  }
+
+  it should "invalid schema id throws InvalidSchemaIdError" in {
+    import spark.implicits._
+    val schema = new Schema.Parser().parse("""{"type": "string"}""");
+    val registryConfig = Map("schema.registry.url" -> "mock://registry", "max.schemas.per.subject" -> "200")
+    val config = AvroDeSerConfig(Int.MaxValue, schema, errOnEvolution = false, FailFastExceptionHandler())
+    val data = Seq(Row(MAGIC_BYTE ++ BigInt(Int.MaxValue).toByteArray ++ asBytes(schema, "key")))
+    val result = spark.createDataFrame(data.asJava, StructType(Seq(StructField("key", BinaryType))))
+      .select(new Column(AvroBinaryToCatalyst(functions.col("key").expr, config, registryConfig)).as("key"))
+    val error = intercept[SparkException] {
+      result.show(false)
+    }
+    assert(error.getCause != null)
+    assert(error.getCause.getClass == classOf[InvalidSchemaIdError])
+  }
+
+  it should "invalid schema id with id col throws InvalidSchemaIdError" in {
+    import spark.implicits._
+    val schema = new Schema.Parser().parse("""{"type": "string"}""");
+    val registryConfig = Map("schema.registry.url" -> "mock://registry", "max.schemas.per.subject" -> "200")
+    val config = AvroDeSerConfig(Int.MaxValue, schema, errOnEvolution = false, FailFastExceptionHandler())
+    val data = Seq(Row(MAGIC_BYTE ++ BigInt(Int.MaxValue).toByteArray ++ asBytes(schema, "key")))
+    val result = spark.createDataFrame(data.asJava, StructType(Seq(StructField("key", BinaryType))))
+      .select(new Column(AvroBinaryWithIdToCatalyst(functions.col("key").expr, functions.lit(Int.MaxValue).expr, config, registryConfig)).as("key"))
+    val error = intercept[SparkException] {
+      result.show(false)
+    }
+    assert(error.getCause != null)
+    assert(error.getCause.getClass == classOf[InvalidSchemaIdError])
+  }
+
+  it should "invalid url throws RegistryCallError" in {
+    import spark.implicits._
+    val schema = new Schema.Parser().parse("""{"type": "string"}""");
+    val registryConfig = Map("schema.registry.url" -> "ftp://registry", "max.schemas.per.subject" -> "200")
+    val config = AvroDeSerConfig(Int.MaxValue, schema, errOnEvolution = false, FailFastExceptionHandler())
+    val data = Seq(Row(MAGIC_BYTE ++ BigInt(Int.MaxValue).toByteArray ++ asBytes(schema, "key")))
+    val result = spark.createDataFrame(data.asJava, StructType(Seq(StructField("key", BinaryType))))
+      .select(new Column(AvroBinaryToCatalyst(functions.col("key").expr, config, registryConfig)).as("key"))
+    assertThrows[RegistryCallError] {
+      result.show(false)
+    }
+  }
+
+  it should "invalid url with id col throws RegistryCallError" in {
+    import spark.implicits._
+    val schema = new Schema.Parser().parse("""{"type": "string"}""");
+    val registryConfig = Map("schema.registry.url" -> "ftp://registry", "max.schemas.per.subject" -> "200")
+    val config = AvroDeSerConfig(Int.MaxValue, schema, errOnEvolution = false, FailFastExceptionHandler())
+    val data = Seq(Row(MAGIC_BYTE ++ BigInt(Int.MaxValue).toByteArray ++ asBytes(schema, "key")))
+    val result = spark.createDataFrame(data.asJava, StructType(Seq(StructField("key", BinaryType))))
+      .select(new Column(AvroBinaryWithIdToCatalyst(functions.col("key").expr, functions.lit(Int.MaxValue).expr, config, registryConfig)).as("key"))
+    assertThrows[RegistryCallError] {
+      result.show(false)
+    }
   }
 
   private def asBytes(schema: Schema, datum: Any): Array[Byte] = {

@@ -14,10 +14,10 @@ package com.adobe.spark.sql.avro.client
 
 import scala.collection.concurrent
 
-object RegistryFactory {
-  private val clientInstances: concurrent.Map[Map[String,String], Registry] = concurrent.TrieMap()
+object RegistryClientFactory {
+  private val clientInstances: concurrent.Map[Map[String,String], RegistryClient] = concurrent.TrieMap()
   
-  def create(configs: Map[String,String]): Registry = {
+  def create(configs: Map[String,String]): RegistryClient = {
     clientInstances.getOrElseUpdate(configs, {
       RegistryClientWrapper(RegistryClient.createClient(configs))
     })

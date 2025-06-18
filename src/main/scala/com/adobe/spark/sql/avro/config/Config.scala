@@ -12,9 +12,11 @@
 
 package com.adobe.spark.sql.avro.config
 
+import com.adobe.spark.sql.avro.client.RegistryClientFactory
 import com.adobe.spark.sql.avro.errors.{DeSerExceptionHandler, FailFastExceptionHandler}
 import io.confluent.kafka.schemaregistry.avro.AvroSchema
 import org.apache.avro.Schema
+import org.apache.spark.sql.catalyst.expressions.ExprUtils
 
 
 case class AvroDeSerConfig(schemaId: Long,
@@ -34,10 +36,14 @@ object Config {
   val SCHEMA_REGISTRY_URL = "schema.registry.url"
   val CACHE_SIZE = "max.schemas.per.subject"
 
-  def avroDeSerConfigFromMap(map: Map[String, String], default: Option[Any]): AvroDeSerConfig = {
+  def avroDeSerConfigFromMap(map: Map[String, String], default: Option[Any], registryConfig: Map[String, String]): AvroDeSerConfig = {
+    lazy val client = RegistryClientFactory.create(registryConfig)
+    val schemaId = map.get("schemaId").map(_.toLong).getOrElse(client.getSchemaId(map("subject")))
     AvroDeSerConfig(
-      schemaId = map("schemaId").toLong,
-      schema = new AvroSchema(map("schema")).rawSchema(),
+      schemaId = schemaId,
+      schema = map.get("schema")
+        .map(r => new Schema.Parser().parse(r))
+        .getOrElse({client.getSchemaById(schemaId)}),
       errOnEvolution = map("errOnEvolution").toBoolean,
       errHandler = map("errHandler") match {
         case klass: String => DeSerExceptionHandler.build(klass, default)
@@ -47,10 +53,16 @@ object Config {
     )
   }
 
-  def avroSerConfigFromMap(map: Map[String, String]): AvroSerConfig = {
+  def avroSerConfigFromMap(map: Map[String, String], registryConfig: Map[String, String]): AvroSerConfig = {
+    lazy val client = RegistryClientFactory.create(registryConfig)
+    val schemaId = map.get("schemaId").map(_.toLong).getOrElse(client.getSchemaId(map("subject")))
     AvroSerConfig(
-      schemaId = map("schemaId").toLong,
-      schema = new AvroSchema(map("schema")).rawSchema(),
+      schemaId = schemaId,
+      schema = map.get("schema")
+        .map(r => new Schema.Parser().parse(r))
+        .getOrElse({
+          client.getSchemaById(schemaId)
+        }),
       writeSchemaId = map("writeSchemaId").toBoolean,
       magicByteSize = map.getOrElse("magicByteSize", "4").toInt
     )

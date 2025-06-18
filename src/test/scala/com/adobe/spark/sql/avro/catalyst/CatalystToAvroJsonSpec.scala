@@ -14,6 +14,7 @@ package com.adobe.spark.sql.avro.catalyst
 
 import com.adobe.spark.sql.avro.client.RegistryClientFactory
 import com.adobe.spark.sql.avro.config.AvroSerConfig
+import com.github.mrpowers.spark.fast.tests.DatasetComparer
 import io.confluent.kafka.schemaregistry.avro.AvroSchema
 import org.apache.avro.Schema
 import org.apache.avro.generic.GenericData.Record
@@ -24,7 +25,6 @@ import org.apache.spark.sql.catalyst.expressions.Expression
 import org.apache.spark.sql.functions.expr
 import org.apache.spark.sql.types.{BinaryType, StringType, StructField, StructType}
 import org.apache.spark.sql.{Column, Row, SparkSession, functions}
-import com.github.mrpowers.spark.fast.tests.DatasetComparer
 import org.scalatest.BeforeAndAfterEach
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.must.Matchers
@@ -32,9 +32,8 @@ import org.scalatest.matchers.must.Matchers
 import java.io.ByteArrayOutputStream
 import java.util.UUID
 import scala.collection.JavaConverters._
-import scala.collection.Seq
 
-class CatalystToAvroBinarySpec extends AnyFlatSpec with Matchers with BeforeAndAfterEach with DatasetComparer {
+class CatalystToAvroJsonSpec extends AnyFlatSpec with Matchers with BeforeAndAfterEach with DatasetComparer {
 
   private val MAGIC_BYTE = Array[Byte](0, 0, 0, 0)
 
@@ -58,9 +57,9 @@ class CatalystToAvroBinarySpec extends AnyFlatSpec with Matchers with BeforeAndA
     val schemaId = schemaManager.register("serialize-string-correctly", schema)
     val config = AvroSerConfig(schemaId, schema)
     val result = spark.createDataFrame(Seq(Row("key")).asJava, StructType(Seq(StructField("key", StringType, nullable = false))))
-      .select(new Column(CatalystToAvroBinary(functions.col("key").expr, config, registryConfig)).as("key"))
-    val data = Seq(Row(MAGIC_BYTE ++ BigInt(schemaId).toByteArray ++ asBytes(schema, "key")))
-    val expected = spark.createDataFrame(data.asJava, StructType(Seq(StructField("key", BinaryType, nullable = false))))
+      .select(new Column(CatalystToAvroJson(functions.col("key").expr, config, registryConfig)).as("key"))
+    val data = Seq(Row(asString(schema, "key")))
+    val expected = spark.createDataFrame(data.asJava, StructType(Seq(StructField("key", StringType, nullable = false))))
     assertSmallDatasetEquality(result, expected)
   }
 
@@ -83,11 +82,11 @@ class CatalystToAvroBinarySpec extends AnyFlatSpec with Matchers with BeforeAndA
     val result = spark.createDataFrame(
       Seq(Row(Row("k1", 1))).asJava,
       StructType.fromDDL("record struct<key STRING NOT NULL, value INTEGER NOT NULL> NOT NULL")
-    ).select(new Column(CatalystToAvroBinary(functions.col("record").expr, config, registryConfig)).as("record"))
+    ).select(new Column(CatalystToAvroJson(functions.col("record").expr, config, registryConfig)).as("record"))
     val data = Seq(
-      Row(Array[Byte](0, 0, 0, 0) ++ BigInt(schemaId).toByteArray ++ asBytes(schema, Map("key" -> "k1", "value" -> 1)))
+      Row(asString(schema, Map("key" -> "k1", "value" -> 1)))
     )
-    val expected = spark.createDataFrame(data.asJava, StructType(Seq(StructField("record", BinaryType, nullable = false))))
+    val expected = spark.createDataFrame(data.asJava, StructType(Seq(StructField("record", StringType, nullable = false))))
     assertSmallDatasetEquality(result, expected)
   }
 
@@ -110,9 +109,9 @@ class CatalystToAvroBinarySpec extends AnyFlatSpec with Matchers with BeforeAndA
     val result = spark.createDataFrame(
       Seq(Row(null)).asJava,
       StructType.fromDDL("record struct<key STRING NOT NULL, value INTEGER NOT NULL>")
-    ).select(new Column(CatalystToAvroBinary(functions.col("record").expr, config, registryConfig)).as("record"))
+    ).select(new Column(CatalystToAvroJson(functions.col("record").expr, config, registryConfig)).as("record"))
     val data = Seq(Row(null))
-    val expected = spark.createDataFrame(data.asJava, StructType(Seq(StructField("record", BinaryType, nullable = true))))
+    val expected = spark.createDataFrame(data.asJava, StructType(Seq(StructField("record", StringType, nullable = true))))
     assertSmallDatasetEquality(result, expected)
   }
 
@@ -135,9 +134,9 @@ class CatalystToAvroBinarySpec extends AnyFlatSpec with Matchers with BeforeAndA
     val result = spark.createDataFrame(
       Seq(Row(Row("k1", 1))).asJava,
       StructType.fromDDL("record struct<key STRING, value INTEGER> NOT NULL")
-    ).select(new Column(CatalystToAvroBinary(functions.col("record").expr, config, registryConfig)).as("record"))
-    val data = Seq(Row(MAGIC_BYTE ++ BigInt(schemaId).toByteArray ++ asBytes(schema, Map("key" -> "k1", "value" -> 1))))
-    val expected = spark.createDataFrame(data.asJava, StructType(Seq(StructField("record", BinaryType, nullable = false))))
+    ).select(new Column(CatalystToAvroJson(functions.col("record").expr, config, registryConfig)).as("record"))
+    val data = Seq(Row(asString(schema, Map("key" -> "k1", "value" -> 1))))
+    val expected = spark.createDataFrame(data.asJava, StructType(Seq(StructField("record", StringType, nullable = false))))
     assertSmallDatasetEquality(result, expected)
   }
 
@@ -160,14 +159,14 @@ class CatalystToAvroBinarySpec extends AnyFlatSpec with Matchers with BeforeAndA
     val expected = spark.createDataFrame(
       Seq(Row(Row("k1", 1))).asJava,
       StructType.fromDDL("record struct<key STRING NOT NULL, value INTEGER NOT NULL> NOT NULL")
-    ).select(new Column(CatalystToAvroBinary(functions.col("record").expr, config, registryConfig)).as("record"))
+    ).select(new Column(CatalystToAvroJson(functions.col("record").expr, config, registryConfig)).as("record"))
     val result = spark.createDataFrame(
       Seq(Row(Row("k1", 1))).asJava,
       StructType.fromDDL("record struct<key STRING NOT NULL, value INTEGER NOT NULL> NOT NULL")
     )
       .select(expr(
         s"""
-           |to_avro_binary(
+           |to_avro_json(
            | record, 
            | map(
            |   'subject', 'serialize-struct-correctly', 
@@ -200,7 +199,7 @@ class CatalystToAvroBinarySpec extends AnyFlatSpec with Matchers with BeforeAndA
     val expected = spark.createDataFrame(
       Seq(Row(Row("k1", 1))).asJava,
       StructType.fromDDL("record struct<key STRING NOT NULL, value INTEGER NOT NULL> NOT NULL")
-    ).select(new Column(CatalystToAvroBinary(functions.col("record").expr, config, registryConfig)).as("record"))
+    ).select(new Column(CatalystToAvroJson(functions.col("record").expr, config, registryConfig)).as("record"))
     val randomViewId = UUID.randomUUID.toString.replace("-", "")
     spark.createDataFrame(
       Seq(Row(Row("k1", 1))).asJava,
@@ -209,7 +208,7 @@ class CatalystToAvroBinarySpec extends AnyFlatSpec with Matchers with BeforeAndA
     val result = spark.sql(
         s"""
            |SELECT 
-           |  to_avro_binary(
+           |  to_avro_json(
            |   record, 
            |   map(
            |     'subject', 'serialize-struct-correctly', 
@@ -218,7 +217,7 @@ class CatalystToAvroBinarySpec extends AnyFlatSpec with Matchers with BeforeAndA
            |   ), 
            |   'HELLO', 
            |   map('schema.registry.url', 'mock://registry', 'max.schemas.per.subject', '200')
-           |  ) AS record 
+           |  ) AS record
            |FROM `${randomViewId}`
            |""".stripMargin
         )
@@ -227,7 +226,7 @@ class CatalystToAvroBinarySpec extends AnyFlatSpec with Matchers with BeforeAndA
 
   private def asBytes(schema: Schema, datum: Any): Array[Byte] = {
     val out = new ByteArrayOutputStream()
-    val encoder = EncoderFactory.get().binaryEncoder(out, null)
+    val encoder = EncoderFactory.get().jsonEncoder(schema, out)
     val writer = new GenericDatumWriter[Any](schema)
     datum match {
       case x: Map[String, Any] =>
@@ -244,4 +243,25 @@ class CatalystToAvroBinarySpec extends AnyFlatSpec with Matchers with BeforeAndA
     encoder.flush()
     out.toByteArray
   }
+
+  private def asString(schema: Schema, datum: Any): String = {
+    val out = new ByteArrayOutputStream()
+    val encoder = EncoderFactory.get().jsonEncoder(schema, out)
+    val writer = new GenericDatumWriter[Any](schema)
+    datum match {
+      case x: Map[String, Any] =>
+        val record = new Record(schema);
+        x.foreach { case (k, v) => record.put(k, v) }
+        writer.write(record, encoder)
+      case x: Map[Int, Any] =>
+        val record = new Record(schema);
+        x.foreach { case (k, v) => record.put(k, v) }
+        writer.write(record, encoder)
+      case x =>
+        writer.write(x, encoder)
+    }
+    encoder.flush()
+    out.toString
+  }
+
 }
