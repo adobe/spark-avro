@@ -23,7 +23,7 @@ inThisBuild(List(
   )
 ))
 
-ThisBuild / version := "0.1.0"
+ThisBuild / version := "1.0.0"
 
 ThisBuild / scalaVersion := "2.12.19"
 
@@ -32,6 +32,8 @@ lazy val root = (project in file("."))
     organization := "com.adobe", 
     name := "spark-avro"
   )
+
+javacOptions ++= Seq("-source", "11", "-target", "11")
 
 lazy val sparkVersion = "3.5.1" // Use the desired Spark version
 

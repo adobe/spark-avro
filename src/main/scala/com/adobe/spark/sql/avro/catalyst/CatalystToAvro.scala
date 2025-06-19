@@ -14,15 +14,16 @@ package com.adobe.spark.sql.avro.catalyst
 
 import com.adobe.spark.sql.avro.config.{AvroSerConfig, Config}
 import org.apache.avro.generic.GenericDatumWriter
-import org.apache.avro.io.{BinaryEncoder, EncoderFactory}
+import org.apache.avro.io.{BinaryEncoder, EncoderFactory, JsonEncoder}
 import org.apache.spark.sql.avro.{DelegatingAvroSerializer, SchemaConverters}
 import org.apache.spark.sql.catalyst.expressions.codegen.{CodegenContext, ExprCode}
 import org.apache.spark.sql.catalyst.expressions.{ExpectsInputTypes, ExprUtils, Expression, UnaryExpression}
-import org.apache.spark.sql.types.{BinaryType, DataType}
+import org.apache.spark.sql.types.{BinaryType, DataType, StringType}
+import org.apache.spark.unsafe.types.UTF8String
 
 import java.io.ByteArrayOutputStream
 import java.nio.ByteBuffer
- 
+
 case class CatalystToAvroBinary(data: Expression,
                                 config: AvroSerConfig,
                                 registryConfig: Map[String, String])
@@ -31,9 +32,9 @@ case class CatalystToAvroBinary(data: Expression,
   override def child: Expression = data
 
   override def dataType: DataType = BinaryType
-  
+
   override def inputTypes: Seq[DataType] = Seq(SchemaConverters.toSqlType(config.schema).dataType)
-  
+
   @transient private lazy val serializer = new DelegatingAvroSerializer(config.schema, child.dataType, data.nullable)
 
   @transient private lazy val writer = new GenericDatumWriter[Any](writerSchema)
@@ -44,16 +45,14 @@ case class CatalystToAvroBinary(data: Expression,
 
   @transient private lazy val out = new ByteArrayOutputStream
 
-  @transient private val MAGIC_BYTE = 0x0
-
-  @transient private val magicByteSize = config.magicByteSize
-
+  private val MAGIC_BYTE = 0x0
+  
   def this(data: Expression,
            config: Expression,
            registryConfig: Expression) = {
     this(
       data,
-      Config.avroSerConfigFromMap(ExprUtils.convertToMapData(config)),
+      Config.avroSerConfigFromMap(ExprUtils.convertToMapData(config), ExprUtils.convertToMapData(registryConfig)),
       ExprUtils.convertToMapData(registryConfig)
     )
   }
@@ -72,10 +71,10 @@ case class CatalystToAvroBinary(data: Expression,
 
   private def writeSchemaId(id: Long, outStream: ByteArrayOutputStream): Unit = {
     outStream.write(MAGIC_BYTE)
-    if (magicByteSize == 4)
-      outStream.write(ByteBuffer.allocate(magicByteSize).putInt(id.toInt).array())
+    if (config.magicByteSize == 4)
+      outStream.write(ByteBuffer.allocate(config.magicByteSize).putInt(id.toInt).array())
     else
-      outStream.write(ByteBuffer.allocate(magicByteSize).putLong(id).array())
+      outStream.write(ByteBuffer.allocate(config.magicByteSize).putLong(id).array())
   }
 
   override protected def flatArguments: Iterator[Any] = super.flatArguments
@@ -89,6 +88,61 @@ case class CatalystToAvroBinary(data: Expression,
   override protected def withNewChildInternal(newChild: Expression): Expression =
     copy(data = newChild)
 
-  override def prettyName: String = "to_avro_using_registry" // Very innovative naming
+  override def prettyName: String = "to_avro_binary" // Very innovative naming
+
+}
+
+case class CatalystToAvroJson(data: Expression,
+                                config: AvroSerConfig,
+                                registryConfig: Map[String, String])
+  extends UnaryExpression with ExpectsInputTypes {
+
+  override def child: Expression = data
+
+  override def dataType: DataType = StringType
+
+  override def inputTypes: Seq[DataType] = Seq(SchemaConverters.toSqlType(config.schema).dataType)
+
+  @transient private lazy val serializer = new DelegatingAvroSerializer(config.schema, child.dataType, data.nullable)
+
+  @transient private lazy val writer = new GenericDatumWriter[Any](writerSchema)
+
+  @transient private lazy val writerSchema = config.schema
+
+  @transient private var encoder: JsonEncoder = _
+
+  @transient private lazy val out = new ByteArrayOutputStream
+  
+  def this(data: Expression,
+           config: Expression,
+           registryConfig: Expression) = {
+    this(
+      data,
+      Config.avroSerConfigFromMap(ExprUtils.convertToMapData(config), ExprUtils.convertToMapData(registryConfig)),
+      ExprUtils.convertToMapData(registryConfig)
+    )
+  }
+
+  override def nullSafeEval(input: Any): UTF8String = {
+    out.reset()
+    encoder = EncoderFactory.get().jsonEncoder(writerSchema, out)
+    val avroData = serializer.serialize(input)
+    writer.write(avroData, encoder)
+    encoder.flush()
+    UTF8String.fromString(out.toString)
+  }
+
+  override protected def flatArguments: Iterator[Any] = super.flatArguments
+
+  override protected def doGenCode(ctx: CodegenContext, ev: ExprCode): ExprCode = {
+    val expr = ctx.addReferenceObj("this", this)
+    defineCodeGen(ctx, ev, input =>
+      s"(UTF8String) $expr.nullSafeEval($input)")
+  }
+
+  override protected def withNewChildInternal(newChild: Expression): Expression =
+    copy(data = newChild)
+
+  override def prettyName: String = "to_avro_json"
 
 }
