@@ -62,6 +62,7 @@ val schemaId = 1L
 val registryConfig = Map(
   "schema.registry.url" -> "mock://registry", 
   "max.schemas.per.subject" -> "200", 
+  "cache.ttl.millis" -> "60000", 
   "class" -> "com.adobe.spark.sql.avro.client.ApicurioRegistryClient"
 )
 val serializedColumn = to_avro(col("my_data"), serConfig(schemaId, registryConfig, writeSchemaId=true, magicByteSize=4), registryConfig)
@@ -76,7 +77,8 @@ import com.adobe.spark.sql.avro.functions._
 val schemaId = 1L
 val registryConfig = Map(
   "schema.registry.url" -> "mock://registry", 
-  "max.schemas.per.subject" -> "200", 
+  "max.schemas.per.subject" -> "200",
+  "cache.ttl.millis" -> "60000",
   "class" -> "com.adobe.spark.sql.avro.client.ApicurioRegistryClient"
 )
 val serializedColumn = to_avro_json(col("my_data"), serConfig(schemaId, registryConfig, magicByteSize=4), registryConfig) // writeSchemaId has no effect for json
@@ -142,7 +144,8 @@ import com.adobe.spark.sql.avro.functions._
 val schemaSubject = "my-schema"
 val registryConfig = Map(
   "schema.registry.url" -> "mock://registry", 
-  "max.schemas.per.subject" -> "200",  
+  "max.schemas.per.subject" -> "200",
+  "cache.ttl.millis" -> "60000",
   "class" -> "com.adobe.spark.sql.avro.client.ApicurioRegistryClient"
 )
 val deserializerConfig = deSerConfigForSubject(schemaSubject, registryConfig,
@@ -301,6 +304,7 @@ FROM dataset
 val registryConfig = Map(
   "schema.registry.url" -> "mock://registry", // Replace with your registry endpoint
   "max.schemas.per.subject" -> "200",
+  "cache.ttl.millis" -> "60000",
   "class" -> "com.adobe.spark.sql.avro.client.ApicurioRegistryClient"
 )
 ```

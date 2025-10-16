@@ -14,7 +14,8 @@ package com.adobe.spark.sql.avro.client
 
 import com.adobe.spark.sql.avro.config.Config
 import com.adobe.spark.sql.avro.errors.{InvalidSchemaIdError, RegistryCallError}
-import io.apicurio.registry.rest.client.{RegistryClientFactory => ApicurioClientFactory, RegistryClient => ApicurioClient}
+import com.google.common.cache.{Cache, CacheBuilder, CacheLoader}
+import io.apicurio.registry.rest.client.{RegistryClient => ApicurioClient, RegistryClientFactory => ApicurioClientFactory}
 import io.apicurio.registry.types.ArtifactType
 import io.confluent.kafka.schemaregistry.avro.AvroSchema
 import io.confluent.kafka.schemaregistry.client.rest.exceptions.RestClientException
@@ -25,6 +26,7 @@ import org.apache.spark.internal.Logging
 
 import java.io.IOException
 import java.nio.charset.StandardCharsets
+import java.time.Duration
 import java.util
 import scala.collection.JavaConverters._
 import scala.collection.mutable
@@ -93,12 +95,23 @@ case class ConfluentRegistryClient(url: String, configs: Map[String, Object]) ex
 case class ApicurioRegistryClient(url: String, configs: Map[String, Object]) extends RegistryClient with Logging {
 
   private val APICURIO_DEFAULT_GROUP_ID = "default"
+  private val EXTRA_CONFIGS = Set("max.schemas.per.subject", "cache.ttl.millis")
+  
+  private val cacheSize = configs.getOrElse("max.schemas.per.subject", "0").toString.toInt
+  private val ttl = configs.getOrElse("cache.ttl.millis", "0").toString.toLong
+  
+  private lazy val schemaCache: Cache[Long, Schema] = CacheBuilder.newBuilder().asInstanceOf[CacheBuilder[Long, Schema]]
+    .expireAfterAccess(Duration.ofMillis(ttl)).maximumSize(cacheSize)
+    .build(CacheLoader.from((k: Long) => getSchemaById(k)))
+  
+  private lazy val schemaMetadataCache: Cache[String, SchemaMetadata] = CacheBuilder.newBuilder().asInstanceOf[CacheBuilder[String, SchemaMetadata]]
+    .expireAfterAccess(Duration.ofMillis(ttl)).maximumSize(cacheSize)
+    .build(CacheLoader.from((k: String) => getLatestMetadata(k)))
 
-  lazy val client: ApicurioClient = ApicurioClientFactory.create(url, new util.HashMap[String, Object](configs.asJava))
+  lazy val client: ApicurioClient = ApicurioClientFactory.create(url, new util.HashMap[String, Object](configs.filterKeys(!EXTRA_CONFIGS.contains(_)).asJava))
 
   override def getSchemaById(schemaId: Long): Schema = {
     val schemaStream = client.getContentByGlobalId(schemaId, true, true)
-
     var schemaString = ""
     try {
       schemaString = IOUtils.toString(schemaStream, StandardCharsets.UTF_8)

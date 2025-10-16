@@ -19,6 +19,7 @@ object RegistryClientFactory {
   
   def create(configs: Map[String,String]): RegistryClient = {
     clientInstances.getOrElseUpdate(configs, {
+      println(s"Cache miss ${configs}")
       RegistryClientWrapper(RegistryClient.createClient(configs))
     })
   }
